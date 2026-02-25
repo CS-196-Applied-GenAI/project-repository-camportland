@@ -1,1 +1,77 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <style>
+      body { font-family: Arial, sans-serif; padding: 12px; }
+      label { display: block; margin-top: 10px; font-weight: 600; }
+      input, textarea { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; }
+      textarea { min-height: 120px; resize: vertical; }
+      button { margin-top: 14px; padding: 10px 12px; width: 100%; cursor: pointer; }
+      #status { margin-top: 12px; font-size: 12px; }
+      #status.ok { color: #0b6b0b; }
+      #status.err { color: #b00020; }
+    </style>
+  </head>
+  <body>
+    <h3>Add Event</h3>
 
+    <form id="eventForm">
+      <label for="eventName">Event Name</label>
+      <input id="eventName" name="eventName" type="text" required />
+
+      <label for="eventDate">Date</label>
+      <input id="eventDate" name="eventDate" type="date" required />
+
+      <label for="totalRevenue">Total Revenue</label>
+      <input id="totalRevenue" name="totalRevenue" type="number" step="0.01" min="0" required />
+
+      <label for="rawAttendance">Raw Attendance List</label>
+      <textarea id="rawAttendance" name="rawAttendance" placeholder="Paste names separated by commas or new lines..."></textarea>
+
+      <button type="submit">Submit</button>
+      <div id="status"></div>
+    </form>
+
+    <script>
+      function toFormDataObject(formEl) {
+        const fd = new FormData(formEl);
+        return {
+          eventName: (fd.get('eventName') || '').toString().trim(),
+          eventDate: (fd.get('eventDate') || '').toString().trim(),
+          totalRevenue: (fd.get('totalRevenue') || '').toString().trim(),
+          rawAttendance: (fd.get('rawAttendance') || '').toString()
+        };
+      }
+
+      const form = document.getElementById('eventForm');
+      const statusEl = document.getElementById('status');
+
+      function setStatus(message, isOk) {
+        statusEl.textContent = message;
+        statusEl.className = isOk ? 'ok' : 'err';
+      }
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        setStatus('Submitting...', true);
+
+        const formData = toFormDataObject(form);
+
+        google.script.run
+          .withSuccessHandler(function (res) {
+            if (res && res.ok) {
+              setStatus(res.message || 'Event added.', true);
+              form.reset();
+            } else {
+              setStatus((res && res.message) ? res.message : 'Unable to add event.', false);
+            }
+          })
+          .withFailureHandler(function (err) {
+            setStatus('Error: ' + (err && err.message ? err.message : err), false);
+          })
+          .handleAddEventStub(formData);
+      });
+    </script>
+  </body>
+</html>
