@@ -6,7 +6,7 @@
  * - Duplicate event prevention + locking
  * - Processed Attendance column on Events
  * - Camp Kesem bold theme formatting (no competitive conditional highlights)
- * - Prettier Admin-only PDF via a dedicated print sheet (NO LOGO)
+ * - Prettier Admin-only PDF via a dedicated print sheet (LOGO ON RIGHT)
  *
  * IMPORTANT LIMITATION:
  * Apps Script cannot prevent a user from viewing sheet data if they already have access to the spreadsheet.
@@ -41,6 +41,22 @@ const AUTOMATION = {
   lockWaitMs: 15000
 };
 
+// PDF logo settings
+const PDF_LOGO = {
+  driveFileId: '1SJ91797QUSOthzN4Drpw568CSwF20sKw',
+  anchorCellA1: 'E1', // top-right
+  widthPx: 170,
+  heightPx: 56
+};
+
+/** -------------------------
+ *  Fast-path caches (per execution)
+ *  ------------------------- */
+
+let _SHEETS_INITIALIZED_ONCE_ = false;
+let _ROLE_CACHE_ = {}; // key: email -> role
+let _CURRENT_USER_EMAIL_CACHE_ = null;
+
 /** -------------------------
  *  Menu / Entry Points
  *  ------------------------- */
@@ -51,16 +67,28 @@ function onOpen() {
 
   menu.addItem('View My Results', 'UiService_viewMyResults');
 
-  menu.addSeparator();
-  menu.addItem('Add Member', 'UiService_showAddMemberSidebar');
-  menu.addItem('Add Event', 'UiService_showAddEventSidebar');
-  menu.addSeparator();
-  menu.addItem('Generate PDF', 'PdfService_generateMemberChartPDF');
-  menu.addSeparator();
-  menu.addItem('Apply Camp Kesem Theme', 'FormattingService_applyTheme');
-  menu.addSeparator();
-  menu.addItem('Initialize Sheets', 'initializeSheets');
-  menu.addItem('Validate System Health', 'validateSystemHealth');
+  const email = RoleService.getCurrentUserEmail();
+  const role = RoleService.getRoleForEmail(email);
+
+  // Admin + Super Admin can recompute
+  if (role === RoleService.ROLE_SUPER_ADMIN || role === RoleService.ROLE_ADMIN) {
+    menu.addSeparator();
+    menu.addItem('Recompute / Refresh Charts', 'ProcessingService_processAllEvents');
+  }
+
+  // Super Admin: can do everything
+  if (role === RoleService.ROLE_SUPER_ADMIN) {
+    menu.addSeparator();
+    menu.addItem('Add Member', 'UiService_showAddMemberSidebar');
+    menu.addItem('Add Event', 'UiService_showAddEventSidebar');
+    menu.addSeparator();
+    menu.addItem('Generate PDF', 'PdfService_generateMemberChartPDF');
+    menu.addSeparator();
+    menu.addItem('Apply Camp Kesem Theme', 'FormattingService_applyTheme');
+    menu.addSeparator();
+    menu.addItem('Initialize Sheets', 'initializeSheets');
+    menu.addItem('Validate System Health', 'validateSystemHealth');
+  }
 
   menu.addToUi();
 }
@@ -70,12 +98,12 @@ function UiService_viewMyResults() {
 }
 
 function UiService_showAddMemberSidebar() {
-  SecurityService.requireAdmin_('Open Add Member sidebar');
+  SecurityService.requireSuperAdmin_('Open Add Member sidebar');
   UiService.showAddMemberSidebar();
 }
 
 function UiService_showAddEventSidebar() {
-  SecurityService.requireAdmin_('Open Add Event sidebar');
+  SecurityService.requireSuperAdmin_('Open Add Event sidebar');
   UiService.showAddEventSidebar();
 }
 
@@ -159,16 +187,44 @@ function validateSystemHealth() {
  *  ------------------------- */
 
 function initializeSheets() {
+  // In a single Apps Script execution, the sheet layout won't change.
+  // This prevents repeated expensive header/sheet checks.
+  if (_SHEETS_INITIALIZED_ONCE_) return { ok: true, skipped: true };
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  _ensureSheetWithHeader_(ss, SHEETS.MEMBERS, HEADERS.MEMBERS);
-  _ensureSheetWithHeader_(ss, SHEETS.EVENTS, HEADERS.EVENTS);
-  _ensureSheetWithHeader_(ss, SHEETS.PROCESSED, HEADERS.PROCESSED);
-  _ensureSheetWithHeader_(ss, SHEETS.MEMBER_CHART, HEADERS.MEMBER_CHART);
-  _ensureSheetWithHeader_(ss, SHEETS.MY_CHART, HEADERS.MY_CHART);
-  _ensureSheetWithHeader_(ss, SHEETS.ROLES, HEADERS.ROLES);
+  const members = _ensureSheetWithHeader_(ss, SHEETS.MEMBERS, HEADERS.MEMBERS);
+  const events = _ensureSheetWithHeader_(ss, SHEETS.EVENTS, HEADERS.EVENTS);
+  const processed = _ensureSheetWithHeader_(ss, SHEETS.PROCESSED, HEADERS.PROCESSED);
+  const memberChart = _ensureSheetWithHeader_(ss, SHEETS.MEMBER_CHART, HEADERS.MEMBER_CHART);
+  const myChart = _ensureSheetWithHeader_(ss, SHEETS.MY_CHART, HEADERS.MY_CHART);
+  const roles = _ensureSheetWithHeader_(ss, SHEETS.ROLES, HEADERS.ROLES);
 
   _ensureSheetExists_(ss, SHEETS.MEMBER_CHART_PRINT);
+
+  // Theme only newly created sheets (preserves "one-time apply" feel)
+  if (typeof FormattingService !== 'undefined' && FormattingService && typeof FormattingService._applySheet_ === 'function') {
+    if (members.created) FormattingService._applySheet_(members.sheet, 'MEMBERS');
+    if (events.created) FormattingService._applySheet_(events.sheet, 'EVENTS');
+    if (processed.created) FormattingService._applySheet_(processed.sheet, 'PROCESSED');
+    if (memberChart.created) FormattingService._applySheet_(memberChart.sheet, 'MEMBER_CHART');
+    if (myChart.created) FormattingService._applySheet_(myChart.sheet, 'MY_CHART');
+    if (roles.created) FormattingService._applySheet_(roles.sheet, 'ROLES');
+  }
+
+  _SHEETS_INITIALIZED_ONCE_ = true;
+
+  return {
+    ok: true,
+    created: {
+      MEMBERS: members.created,
+      EVENTS: events.created,
+      PROCESSED: processed.created,
+      MEMBER_CHART: memberChart.created,
+      MY_CHART: myChart.created,
+      ROLES: roles.created
+    }
+  };
 }
 
 function _ensureSheetExists_(ss, sheetName) {
@@ -179,6 +235,7 @@ function _ensureSheetExists_(ss, sheetName) {
 
 function _ensureSheetWithHeader_(ss, sheetName, headerValues) {
   let sheet = ss.getSheetByName(sheetName);
+  const created = !sheet;
   if (!sheet) sheet = ss.insertSheet(sheetName);
 
   const headerRange = sheet.getRange(1, 1, 1, headerValues.length);
@@ -186,6 +243,8 @@ function _ensureSheetWithHeader_(ss, sheetName, headerValues) {
 
   if (!_arraysEqual_(existing, headerValues)) headerRange.setValues([headerValues]);
   sheet.setFrozenRows(1);
+
+  return { sheet, created };
 }
 
 function _arraysEqual_(a, b) {
@@ -243,7 +302,7 @@ const UiService = {
 
 function handleAddMemberStub(formData) {
   try {
-    SecurityService.requireAdmin_('Add Member');
+    SecurityService.requireSuperAdmin_('Add Member');
     return MemberService.addMember(formData);
   } catch (err) {
     return { ok: false, message: `Error adding member: ${err && err.message ? err.message : err}` };
@@ -252,7 +311,7 @@ function handleAddMemberStub(formData) {
 
 function handleAddEventStub(formData) {
   try {
-    SecurityService.requireAdmin_('Add Event');
+    SecurityService.requireSuperAdmin_('Add Event');
     return EventService.addEvent(formData);
   } catch (err) {
     return { ok: false, message: `Error adding event: ${err && err.message ? err.message : err}` };
@@ -268,6 +327,13 @@ const SecurityService = {
     const email = RoleService.getCurrentUserEmail();
     const role = RoleService.getRoleForEmail(email);
     const ok = role === RoleService.ROLE_ADMIN || role === RoleService.ROLE_SUPER_ADMIN;
+    if (!ok) throw new Error(`Permission denied for "${actionName}". Your role is "${role}".`);
+  },
+
+  requireSuperAdmin_: function (actionName) {
+    const email = RoleService.getCurrentUserEmail();
+    const role = RoleService.getRoleForEmail(email);
+    const ok = role === RoleService.ROLE_SUPER_ADMIN;
     if (!ok) throw new Error(`Permission denied for "${actionName}". Your role is "${role}".`);
   }
 };
@@ -310,13 +376,17 @@ const RoleService = {
   ROLE_VIEWER: 'Viewer',
 
   getCurrentUserEmail: function () {
+    if (_CURRENT_USER_EMAIL_CACHE_ != null) return _CURRENT_USER_EMAIL_CACHE_;
+
     let email = '';
     try {
       email = Session.getEffectiveUser().getEmail() || '';
     } catch (err) {
       email = '';
     }
-    return String(email || '').trim().toLowerCase();
+
+    _CURRENT_USER_EMAIL_CACHE_ = String(email || '').trim().toLowerCase();
+    return _CURRENT_USER_EMAIL_CACHE_;
   },
 
   getRoleForEmail: function (email) {
@@ -325,19 +395,28 @@ const RoleService = {
     const e = String(email || '').trim().toLowerCase();
     if (!e) return RoleService.ROLE_VIEWER;
 
+    if (_ROLE_CACHE_[e]) return _ROLE_CACHE_[e];
+
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName(SHEETS.ROLES);
 
     const lastRow = sheet.getLastRow();
-    if (lastRow < 2) return RoleService.ROLE_VIEWER;
+    if (lastRow < 2) {
+      _ROLE_CACHE_[e] = RoleService.ROLE_VIEWER;
+      return _ROLE_CACHE_[e];
+    }
 
     const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
     for (let i = 0; i < values.length; i++) {
       const rowEmail = String(values[i][0] || '').trim().toLowerCase();
-      if (rowEmail === e) return RoleService._normalizeRole_(values[i][1]);
+      if (rowEmail === e) {
+        _ROLE_CACHE_[e] = RoleService._normalizeRole_(values[i][1]);
+        return _ROLE_CACHE_[e];
+      }
     }
 
-    return RoleService.ROLE_VIEWER;
+    _ROLE_CACHE_[e] = RoleService.ROLE_VIEWER;
+    return _ROLE_CACHE_[e];
   },
 
   _normalizeRole_: function (role) {
@@ -369,6 +448,13 @@ const MemberService = {
     const memberId = MemberService._generateUniqueMemberId_(existingIds);
 
     sheet.appendRow([normalized.firstName, normalized.lastName, normalized.kesemName, normalized.email, memberId]);
+
+    // Prevent "white text" or other inherited formatting on newly appended row
+    const newRow = sheet.getLastRow();
+    sheet.getRange(newRow, 1, 1, HEADERS.MEMBERS.length)
+      .setFontFamily('Arial')
+      .setFontSize(10)
+      .setFontColor(FormattingService && FormattingService.COLORS ? FormattingService.COLORS.text : '#111827');
 
     _withProcessLock_(function () {
       ProcessingService.processAllEvents();
@@ -469,8 +555,16 @@ const EventService = {
       if (dup) return { ok: false, duplicate: true, message: `Duplicate event detected (same Event Name + Date as row ${dup.row}).` };
 
       sheet.appendRow([normalized.eventName, normalized.eventDate, normalized.totalRevenue, normalized.rawAttendance, '', '']);
-      const lastRow = sheet.getLastRow();
-      sheet.getRange(lastRow, 3).setNumberFormat('$#,##0.00');
+
+      // Prevent "white text" or other inherited formatting on newly appended row
+      const newRow = sheet.getLastRow();
+      sheet.getRange(newRow, 1, 1, HEADERS.EVENTS.length)
+        .setFontFamily('Arial')
+        .setFontSize(10)
+        .setFontColor(FormattingService && FormattingService.COLORS ? FormattingService.COLORS.text : '#111827');
+
+      sheet.getRange(newRow, 3).setNumberFormat('$#,##0.00');
+      sheet.getRange(newRow, 2).setNumberFormat('MM/dd/yyyy');
     } finally {
       lock.releaseLock();
     }
@@ -490,9 +584,25 @@ const EventService = {
     const revenueStr = String(safe.totalRevenue || '').trim();
     const rawAttendance = String(safe.rawAttendance || '');
 
+    // Parse date safely in *local timezone* to avoid off-by-one from UTC parsing.
+    let eventDate = null;
+    if (rawDate) {
+      const m = rawDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) {
+        const y = Number(m[1]);
+        const mo = Number(m[2]) - 1;
+        const d = Number(m[3]);
+        // Noon local time avoids DST/UTC edge cases
+        eventDate = new Date(y, mo, d, 12, 0, 0);
+      } else {
+        const parsed = new Date(rawDate);
+        eventDate = parsed instanceof Date && !isNaN(parsed.getTime()) ? parsed : null;
+      }
+    }
+
     return {
       eventName,
-      eventDate: rawDate ? new Date(rawDate) : null,
+      eventDate,
       totalRevenue: revenueStr === '' ? NaN : Number(revenueStr),
       rawAttendance
     };
@@ -512,9 +622,22 @@ const EventService = {
     return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
   },
 
+  // IMPORTANT: kept as MM/dd to preserve your current duplicate-detection behavior exactly.
+  // NOTE: This means events on same month/day in different years are considered duplicates.
   _dateKey_: function (d) {
-    if (!(d instanceof Date) || isNaN(d.getTime())) return '';
-    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    if (d instanceof Date && !isNaN(d.getTime())) {
+      return Utilities.formatDate(d, Session.getScriptTimeZone(), 'MM/dd');
+    }
+
+    const s = String(d || '').trim();
+    if (!s) return '';
+
+    const parsed = new Date(s);
+    if (parsed instanceof Date && !isNaN(parsed.getTime())) {
+      return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'MM/dd');
+    }
+
+    return s;
   },
 
   _isDuplicateEvent_: function (sheet, normalized) {
@@ -631,6 +754,10 @@ const ProcessingService = {
     if (lastRow >= 2) {
       const eventValues = eventsSheet.getRange(2, 1, lastRow - 1, HEADERS.EVENTS.length).getValues();
 
+      // Batch-write Processed Attendance (col 5) and Revenue per Shift (col 6)
+      const processedAttendanceCol = [];
+      const revenuePerShiftCol = [];
+
       for (let i = 0; i < eventValues.length; i++) {
         const row = eventValues[i];
 
@@ -640,7 +767,11 @@ const ProcessingService = {
         const rawAttendance = row[3];
 
         const isBlank = !eventName && !eventDate && !totalRevenue && !rawAttendance;
-        if (isBlank) continue;
+        if (isBlank) {
+          processedAttendanceCol.push(['']);
+          revenuePerShiftCol.push(['']);
+          continue;
+        }
 
         try {
           const attendanceMap = ProcessingService.parseAttendance(rawAttendance);
@@ -649,7 +780,8 @@ const ProcessingService = {
             .sort()
             .map(k => `${k} x${attendanceMap[k]}`)
             .join('\n');
-          eventsSheet.getRange(i + 2, 5).setValue(processedAttendanceText).setWrap(true);
+
+          processedAttendanceCol.push([processedAttendanceText]);
 
           const totalShifts = Object.keys(attendanceMap).reduce((sum, k) => sum + (Number(attendanceMap[k]) || 0), 0);
 
@@ -659,7 +791,7 @@ const ProcessingService = {
               ? Math.round((revenueNum / totalShifts) * 100) / 100
               : 0;
 
-          eventsSheet.getRange(i + 2, 6).setValue(revenuePerShift).setNumberFormat('$#,##0.00');
+          revenuePerShiftCol.push([revenuePerShift]);
 
           const matchResult = ProcessingService.matchAttendanceToMembers(attendanceMap);
           const enriched = ProcessingService.calculateRevenueDistribution(totalRevenue, matchResult.matched);
@@ -670,7 +802,16 @@ const ProcessingService = {
           }
         } catch (err) {
           Logger.log(`[ProcessingService.processAllEvents] ERROR event "${eventName}": ${err && err.message ? err.message : err}`);
+          // Keep alignment of batch arrays even on error
+          processedAttendanceCol.push(['']);
+          revenuePerShiftCol.push(['']);
         }
+      }
+
+      const writeRows = eventValues.length;
+      if (writeRows > 0) {
+        eventsSheet.getRange(2, 5, writeRows, 1).setValues(processedAttendanceCol).setWrap(true).setVerticalAlignment('top');
+        eventsSheet.getRange(2, 6, writeRows, 1).setValues(revenuePerShiftCol).setNumberFormat('$#,##0.00');
       }
     }
 
@@ -692,7 +833,223 @@ const ProcessingService = {
 };
 
 /** -------------------------
- *  PdfLayoutService (Print Sheet Builder) — NO LOGO
+ *  ChartService
+ *  ------------------------- */
+
+const ChartService = {
+  aggregateMemberTotals: function () {
+    initializeSheets();
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(SHEETS.PROCESSED);
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return {};
+
+    const values = sheet
+      .getRange(2, 1, lastRow - 1, HEADERS.PROCESSED.length)
+      .getValues();
+
+    const acc = {};
+
+    for (let i = 0; i < values.length; i++) {
+      const r = values[i];
+
+      const eventName = String(r[0] || '').trim();
+      const eventDateRaw = r[1];
+      const memberName = String(r[2] || '').trim();
+      const shifts = Number(r[3]) || 0;
+      const revenue = Number(r[4]) || 0;
+
+      if (!memberName) continue;
+
+      const eventDate =
+        eventDateRaw instanceof Date && !isNaN(eventDateRaw.getTime())
+          ? eventDateRaw
+          : null;
+
+      if (!acc[memberName]) {
+        acc[memberName] = { memberName, totalRevenue: 0, _eventsMeta: [] };
+      }
+
+      acc[memberName].totalRevenue += revenue;
+
+      const mmdd = eventDate
+        ? Utilities.formatDate(eventDate, Session.getScriptTimeZone(), 'MM/dd')
+        : '??/??';
+
+      const safeEventName = eventName || '(Unnamed Event)';
+
+      acc[memberName]._eventsMeta.push({
+        date: eventDate || new Date(0),
+        text: `${safeEventName} x${shifts} (${mmdd})`
+      });
+    }
+
+    const result = {};
+    const memberNames = Object.keys(acc);
+
+    for (let i = 0; i < memberNames.length; i++) {
+      const name = memberNames[i];
+      const entry = acc[name];
+
+      entry._eventsMeta.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+      result[name] = {
+        memberName: entry.memberName,
+        totalRevenue: Math.round(entry.totalRevenue * 100) / 100,
+        events: entry._eventsMeta.map(e => e.text)
+      };
+    }
+
+    return result;
+  },
+
+  buildMemberChart: function () {
+    initializeSheets();
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(SHEETS.MEMBER_CHART);
+
+    sheet.clearContents();
+
+    sheet.getRange(1, 1, 1, HEADERS.MEMBER_CHART.length).setValues([HEADERS.MEMBER_CHART]);
+    sheet.setFrozenRows(1);
+
+    const aggregated = ChartService.aggregateMemberTotals();
+    const memberKeys = Object.keys(aggregated);
+
+    if (!memberKeys.length) {
+      sheet.getRange(1, 1, 1, 5).setFontWeight('bold').setHorizontalAlignment('center');
+      return { membersWritten: 0 };
+    }
+
+    const members = MemberService.getAllMembers();
+    const lookup = {};
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i];
+      const kesem = String(m.kesemName || '').trim();
+      const first = String(m.firstName || '').trim();
+      const last = String(m.lastName || '').trim();
+      const full = `${first} ${last}`.trim();
+
+      if (kesem) lookup[_normalizeNameKey_(kesem)] = m;
+      if (full) lookup[_normalizeNameKey_(full)] = m;
+    }
+
+    memberKeys.sort((a, b) => {
+      const ra = Number(aggregated[a].totalRevenue) || 0;
+      const rb = Number(aggregated[b].totalRevenue) || 0;
+      if (rb !== ra) return rb - ra;
+      return String(a).localeCompare(String(b));
+    });
+
+    const rows = memberKeys.map(keyName => {
+      const entry = aggregated[keyName];
+      const hit = lookup[_normalizeNameKey_(keyName)];
+
+      const kesemName = hit ? String(hit.kesemName || '').trim() : String(entry.memberName || '').trim();
+      const firstName = hit ? String(hit.firstName || '').trim() : '';
+      const lastName = hit ? String(hit.lastName || '').trim() : '';
+      const events = (entry.events || []).join('\n');
+      const totalRevenue = Number(entry.totalRevenue) || 0;
+
+      return [kesemName, firstName, lastName, events, totalRevenue];
+    });
+
+    sheet.getRange(2, 1, rows.length, HEADERS.MEMBER_CHART.length).setValues(rows);
+
+    const startRow = 2;
+    const n = rows.length;
+
+    sheet.getRange(1, 1, 1, 5).setFontWeight('bold').setHorizontalAlignment('center');
+    sheet.getRange(startRow, 1, n, 3).setHorizontalAlignment('left').setWrap(false);
+    sheet.getRange(startRow, 4, n, 1).setWrap(true).setVerticalAlignment('top').setHorizontalAlignment('left');
+    sheet.getRange(startRow, 5, n, 1).setNumberFormat('$#,##0.00').setHorizontalAlignment('right');
+
+    sheet.setColumnWidth(1, 160);
+    sheet.setColumnWidth(2, 140);
+    sheet.setColumnWidth(3, 140);
+    sheet.setColumnWidth(4, 320);
+    sheet.setColumnWidth(5, 140);
+
+    return { membersWritten: n };
+  }
+};
+
+/** -------------------------
+ *  MyChartService
+ *  ------------------------- */
+
+const MyChartService = {
+  buildForMember: function (member) {
+    initializeSheets();
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(SHEETS.MY_CHART);
+
+    // Clear values only (keep theme)
+    sheet.clearContents();
+
+    // Header
+    sheet.getRange(1, 1, 1, HEADERS.MY_CHART.length).setValues([HEADERS.MY_CHART]);
+    sheet.setFrozenRows(1);
+
+    const m = member || {};
+    const kesemName = String(m.kesemName || '').trim();
+    const firstName = String(m.firstName || '').trim();
+    const lastName = String(m.lastName || '').trim();
+
+    const aggregated = ChartService.aggregateMemberTotals();
+
+    const full = `${firstName} ${lastName}`.trim();
+    const keys = Object.keys(aggregated);
+
+    let hitKey = '';
+    const kesemKey = _normalizeNameKey_(kesemName);
+    const fullKey = _normalizeNameKey_(full);
+
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const nk = _normalizeNameKey_(k);
+      if (nk === kesemKey || nk === fullKey) {
+        hitKey = k;
+        break;
+      }
+    }
+
+    const entry = hitKey ? aggregated[hitKey] : null;
+    const events = entry && entry.events ? entry.events.join('\n') : '';
+    const totalRevenue = entry ? Number(entry.totalRevenue) || 0 : 0;
+
+    // Write the single output row
+    sheet.getRange(2, 1, 1, HEADERS.MY_CHART.length).setValues([
+      [kesemName || (entry ? entry.memberName : ''), firstName, lastName, events, totalRevenue]
+    ]);
+
+    // Force body row font color (fixes "white text" in MyChart)
+    sheet.getRange(2, 1, 1, HEADERS.MY_CHART.length)
+      .setFontFamily('Arial')
+      .setFontSize(10)
+      .setFontColor(FormattingService && FormattingService.COLORS ? FormattingService.COLORS.text : '#111827');
+
+    // Minimal formatting (similar to MemberChart)
+    sheet.getRange(2, 4).setWrap(true).setVerticalAlignment('top').setHorizontalAlignment('left');
+    sheet.getRange(2, 5).setNumberFormat('$#,##0.00').setHorizontalAlignment('right');
+    sheet.getRange(2, 1, 1, 3).setHorizontalAlignment('left').setWrap(false);
+
+    sheet.setColumnWidth(1, 160);
+    sheet.setColumnWidth(2, 140);
+    sheet.setColumnWidth(3, 140);
+    sheet.setColumnWidth(4, 320);
+    sheet.setColumnWidth(5, 140);
+
+    return { ok: true };
+  }
+};
+
+/** -------------------------
+ *  PdfLayoutService (Print Sheet Builder)
  *  ------------------------- */
 
 const PdfLayoutService = {
@@ -708,23 +1065,26 @@ const PdfLayoutService = {
     printSheet.setHiddenGridlines(true);
     printSheet.setFrozenRows(0);
 
-    // Column widths
+    // Ensure no old merged ranges remain in the header area (prevents merge errors)
+    printSheet.getRange('A1:E3').breakApart();
+
+    // Column widths (give logo room on the right)
     printSheet.setColumnWidth(1, 170);
     printSheet.setColumnWidth(2, 140);
     printSheet.setColumnWidth(3, 140);
     printSheet.setColumnWidth(4, 340);
-    printSheet.setColumnWidth(5, 140);
+    printSheet.setColumnWidth(5, 160); // E wider for logo
 
-    // Header area
-    printSheet.setRowHeight(1, 48);
+    // Header area (give room for logo)
+    printSheet.setRowHeight(1, 54);
     printSheet.setRowHeight(2, 24);
     printSheet.setRowHeight(3, 14);
 
     const title = 'Camp Kesem — Member Revenue Summary';
     const subtitle = `Generated ${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM d, yyyy h:mm a')}`;
 
-    // Title in A1:E1 (merged)
-    const titleRange = printSheet.getRange(1, 1, 1, 5);
+    // Title in A1:D1 (merged) — logo sits in E1
+    const titleRange = printSheet.getRange(1, 1, 1, 4); // A1:D1
     titleRange.merge();
     titleRange
       .setValue(title)
@@ -735,8 +1095,8 @@ const PdfLayoutService = {
       .setVerticalAlignment('middle')
       .setHorizontalAlignment('left');
 
-    // Subtitle in A2:E2 (merged)
-    const subtitleRange = printSheet.getRange(2, 1, 1, 5);
+    // Subtitle in A2:D2 (merged)
+    const subtitleRange = printSheet.getRange(2, 1, 1, 4); // A2:D2
     subtitleRange.merge();
     subtitleRange
       .setValue(subtitle)
@@ -745,6 +1105,9 @@ const PdfLayoutService = {
       .setFontColor('#374151')
       .setVerticalAlignment('middle')
       .setHorizontalAlignment('left');
+
+    // Place logo at E1 (top-right)
+    _insertOrReplaceLogoOnSheet_(printSheet);
 
     // Divider line (row 3)
     printSheet.getRange(3, 1, 1, 5).setBackground('#E5E7EB');
@@ -802,6 +1165,10 @@ const PdfService = {
     SecurityService.requireAdmin_('Generate MemberChart PDF');
 
     PdfLayoutService.buildMemberChartPrintSheet_();
+
+    // Helps ensure images and formatting render before export
+    SpreadsheetApp.flush();
+    Utilities.sleep(400);
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const printSheet = ss.getSheetByName(SHEETS.MEMBER_CHART_PRINT);
@@ -1009,6 +1376,47 @@ const FormattingService = {
  *  Helpers
  *  ------------------------- */
 
+function _insertOrReplaceLogoOnSheet_(sheet) {
+  if (!sheet) return { ok: false, reason: 'no_sheet' };
+  if (!PDF_LOGO || !PDF_LOGO.driveFileId) return { ok: false, reason: 'no_logo_file_id' };
+
+  // Remove existing images to avoid stacking logos each run
+  const imgs = sheet.getImages();
+  for (let i = 0; i < imgs.length; i++) imgs[i].remove();
+
+  // Clear cells behind the logo so nothing "duplicates" visually under transparent pixels
+  sheet.getRange('E1:E2').clearContent().setBackground('#FFFFFF');
+
+  const file = DriveApp.getFileById(PDF_LOGO.driveFileId);
+  const blob = file.getBlob();
+
+  const anchor = sheet.getRange(PDF_LOGO.anchorCellA1); // E1
+  const img = sheet.insertImage(blob, anchor.getColumn(), anchor.getRow());
+
+  img.setWidth(PDF_LOGO.widthPx);
+  img.setHeight(PDF_LOGO.heightPx);
+
+  // Nudge toward the top-right corner
+  if (typeof img.setOffsetX === 'function') img.setOffsetX(10);
+  if (typeof img.setOffsetY === 'function') img.setOffsetY(2);
+
+  return { ok: true, fileName: file.getName() };
+}
+
 function _normalizeNameKey_(name) {
   return String(name || '').trim().toLowerCase();
+}
+
+// Admin + Super Admin menu wrapper for recompute
+function ProcessingService_processAllEvents() {
+  SecurityService.requireAdmin_('Process all events');
+  return _withProcessLock_(function () {
+    ProcessingService.processAllEvents();
+    SpreadsheetApp.getUi().alert(
+      'Recompute Complete',
+      'ProcessedData + charts have been refreshed.',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return { ok: true };
+  });
 }
