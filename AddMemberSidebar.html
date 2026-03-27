@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <style>
+      body { font-family: Arial, sans-serif; padding: 12px; }
+      label { display: block; margin-top: 10px; font-weight: 600; }
+      input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; }
+      button { margin-top: 14px; padding: 10px 12px; width: 100%; cursor: pointer; }
+      button[disabled] { opacity: 0.6; cursor: not-allowed; }
+      #status { margin-top: 12px; font-size: 12px; }
+      #status.ok { color: #0b6b0b; }
+      #status.err { color: #b00020; }
+    </style>
+  </head>
+  <body>
+    <h3>Add Member</h3>
+
+    <form id="memberForm">
+      <label for="firstName">First Name</label>
+      <input id="firstName" name="firstName" type="text" required />
+
+      <label for="lastName">Last Name</label>
+      <input id="lastName" name="lastName" type="text" required />
+
+      <label for="kesemName">Kesem Name</label>
+      <input id="kesemName" name="kesemName" type="text" required />
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="name@domain.com" required />
+
+      <button id="submitBtn" type="submit">Submit</button>
+      <div id="status"></div>
+    </form>
+
+    <script>
+      function toFormDataObject(formEl) {
+        const fd = new FormData(formEl);
+        return {
+          firstName: (fd.get('firstName') || '').toString().trim(),
+          lastName: (fd.get('lastName') || '').toString().trim(),
+          kesemName: (fd.get('kesemName') || '').toString().trim(),
+          email: (fd.get('email') || '').toString().trim().toLowerCase()
+        };
+      }
+
+      const form = document.getElementById('memberForm');
+      const statusEl = document.getElementById('status');
+      const submitBtn = document.getElementById('submitBtn');
+
+      function setStatus(message, isOk) {
+        statusEl.textContent = message;
+        statusEl.className = isOk ? 'ok' : 'err';
+      }
+
+      function setSubmitting(isSubmitting) {
+        submitBtn.disabled = Boolean(isSubmitting);
+        submitBtn.textContent = isSubmitting ? 'Submitting...' : 'Submit';
+      }
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+
+        const formData = toFormDataObject(form);
+
+        if (!formData.email || !formData.email.includes('@')) {
+          setStatus('Please enter a valid email address.', false);
+          return;
+        }
+
+        setStatus('Submitting...', true);
+        setSubmitting(true);
+
+        google.script.run
+          .withSuccessHandler(function (res) {
+            setSubmitting(false);
+
+            if (res && res.ok) {
+              setStatus(res.message || 'Member added.', true);
+              form.reset();
+            } else {
+              setStatus((res && res.message) ? res.message : 'Unable to add member.', false);
+            }
+          })
+          .withFailureHandler(function (err) {
+            setSubmitting(false);
+            setStatus('Error: ' + (err && err.message ? err.message : err), false);
+          })
+          .handleAddMemberStub(formData);
+      });
+    </script>
+  </body>
+</html>

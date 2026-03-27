@@ -1,0 +1,473 @@
+# Camp Kesem Event Revenue Tracking System
+## Incremental Code-Generation Prompts (Test-Driven & Integrated)
+
+IMPORTANT INSTRUCTIONS FOR THE CODE LLM:
+- Do NOT skip steps.
+- Do NOT refactor unrelated code.
+- Keep everything integrated with prior steps.
+- No unused or orphaned functions.
+- Add logging where appropriate.
+- Use clear modular services:
+    - RoleService
+    - MemberService
+    - EventService
+    - ProcessingService
+    - ChartService
+    - PdfService
+    - UiService
+- Always end each step with wiring fully integrated.
+
+---
+
+# PROMPT 1 — Project Bootstrap & Sheet Skeleton
+
+```text
+We are building a Google Apps Script bound to a Google Sheet.
+
+Create the foundational script structure.
+
+Requirements:
+1. Implement onOpen() to add a custom menu:
+   - Menu name: "Kesem Revenue System"
+   - Items:
+       - Add Member
+       - Add Event
+       - Generate PDF
+
+2. Create a function initializeSheets() that:
+   - Ensures sheets exist:
+       - Members
+       - Events
+       - ProcessedData
+       - MemberChart
+   - Adds headers only (no logic yet).
+   - Freezes header rows.
+
+3. Add Logger.log statements confirming:
+   - Sheet creation
+   - Header validation
+
+4. Add a temporary menu item "Initialize Sheets" to call initializeSheets().
+
+Do NOT implement business logic yet.
+All functions must be callable.
+Everything must run without errors.
+
+Return complete Apps Script code.
+```
+
+---
+
+# PROMPT 2 — Member Sidebar UI (Stub Only)
+
+```text
+Extend the existing script.
+
+1. Create UiService.showAddMemberSidebar().
+2. Build a simple HTML sidebar:
+   - First Name
+   - Last Name
+   - Kesem Name
+   - Submit button
+
+3. Wire menu item "Add Member" to open sidebar.
+4. On submit:
+   - Call google.script.run.handleAddMemberStub(formData)
+5. Implement handleAddMemberStub() that only logs the data.
+
+No sheet writes yet.
+Ensure:
+- Sidebar opens
+- Submit logs form data
+- No unused code
+```
+
+---
+
+# PROMPT 3 — Persist Member (Test-Driven)
+
+```text
+Upgrade handleAddMemberStub to real implementation.
+
+1. Create MemberService.addMember(data).
+2. Validate:
+   - All fields non-empty
+3. Generate UUID for Member ID.
+4. Append row to Members sheet:
+   First Name | Last Name | Kesem Name | Member ID
+
+5. Log success and return success message to sidebar.
+6. Update sidebar to show confirmation.
+
+Add helper:
+MemberService.getAllMembers()
+
+Ensure:
+- No duplicate ID collisions
+- No overwriting rows
+- Code modular and integrated
+
+Return complete updated script.
+```
+
+---
+
+# PROMPT 4 — Event Sidebar (Stub)
+
+```text
+Add Add Event UI.
+
+1. Create UiService.showAddEventSidebar().
+2. Sidebar fields:
+   - Event Name
+   - Date
+   - Total Revenue
+   - Raw Attendance List (textarea)
+
+3. On submit:
+   - Call handleAddEventStub(formData)
+4. Stub only logs data.
+
+No sheet persistence yet.
+Menu wired.
+No orphaned functions.
+```
+
+---
+
+# PROMPT 5 — Persist Event
+
+```text
+Upgrade event stub.
+
+1. Create EventService.addEvent(data).
+2. Validate:
+   - Name non-empty
+   - Date valid
+   - Revenue numeric > 0
+3. Append to Events sheet:
+   Event Name | Date | Total Revenue | Raw Attendance List
+
+4. Format revenue as USD (2 decimals).
+5. Log result.
+
+Ensure:
+- Clean modular structure
+- No broken menu wiring
+- No duplication of logic
+```
+
+---
+
+# PROMPT 6 — Attendance Parsing (Pure Function + Tests)
+
+```text
+Implement ProcessingService.parseAttendance(rawString).
+
+Requirements:
+- Split by newline or comma
+- Trim whitespace
+- Ignore empty lines
+- Count duplicates
+- Return object map:
+    { "Name A": 2, "Name B": 1 }
+
+Add:
+ProcessingService.testParseAttendance()
+
+Log test results clearly.
+
+Do NOT integrate into recalculation yet.
+Keep pure function.
+```
+
+---
+
+# PROMPT 7 — Match Names to Members
+
+```text
+Implement:
+
+ProcessingService.matchAttendanceToMembers(attendanceMap)
+
+Requirements:
+- Case-insensitive match to Members sheet
+- Return:
+    {
+      matched: [{ memberId, name, shifts }],
+      unmatched: ["Unknown Name"]
+    }
+
+Log unmatched names.
+
+Add test function:
+ProcessingService.testMatching()
+
+No sheet writes yet.
+Pure integration.
+```
+
+---
+
+# PROMPT 8 — Revenue Per Shift Calculation
+
+```text
+Implement:
+
+ProcessingService.calculateRevenueDistribution(totalRevenue, matchedList)
+
+Requirements:
+- totalShifts = sum shifts
+- revenuePerShift = totalRevenue / totalShifts
+- Round to 2 decimals
+- Handle division by zero
+- Return enriched matched list with revenuePerPerson
+
+Add test:
+ProcessingService.testRevenueCalculation()
+
+No sheet writes yet.
+Pure logic only.
+```
+
+---
+
+# PROMPT 9 — Write ProcessedData Sheet
+
+```text
+Integrate processing pipeline.
+
+Create:
+
+ProcessingService.processAllEvents()
+
+For each event:
+1. Parse attendance
+2. Match members
+3. Calculate revenue
+4. Write to ProcessedData sheet:
+   Event | Date | Member | Shifts | Revenue
+
+Clear sheet before writing.
+
+Add menu item:
+"Recalculate Now"
+
+Ensure:
+- No duplicate rows
+- Full integration
+- Logging per event
+```
+
+---
+
+# PROMPT 10 — Member Aggregation Engine
+
+```text
+Implement:
+
+ChartService.aggregateMemberTotals()
+
+Requirements:
+- Read ProcessedData
+- Group by Member
+- Sum revenue
+- Collect event strings
+- Sort events chronologically
+- Format string:
+   "Event Name x2 (MM/DD)"
+
+Return in-memory structure.
+
+Add test:
+ChartService.testAggregation()
+```
+
+---
+
+# PROMPT 11 — Populate MemberChart
+
+```text
+Implement:
+
+ChartService.buildMemberChart()
+
+Requirements:
+- Clear MemberChart
+- Headers:
+   Member Name | Events | Total Revenue
+- Write sorted results
+- Format currency
+- Freeze header
+
+Call aggregateMemberTotals() internally.
+
+Integrate into:
+ProcessingService.processAllEvents()
+
+No orphaned logic.
+```
+
+---
+
+# PROMPT 12 — Alternating Row Formatting
+
+```text
+Enhance buildMemberChart():
+
+- Bold header
+- Alternating row colors
+- Auto-resize columns
+
+Keep formatting isolated in:
+ChartService.formatMemberChart()
+
+Call after chart build.
+
+No breaking logic.
+```
+
+---
+
+# PROMPT 13 — Automation Wiring
+
+```text
+Integrate automatic recalculation.
+
+After:
+- MemberService.addMember()
+- EventService.addEvent()
+
+Call:
+ProcessingService.processAllEvents()
+
+Prevent recursive loops.
+
+Remove "Recalculate Now" menu item.
+
+Ensure:
+- Everything auto-updates
+- No double execution
+```
+
+---
+
+# PROMPT 14 — Role Detection
+
+```text
+Implement RoleService.
+
+Functions:
+- getCurrentUserEmail()
+- getRoleForEmail(email)
+
+Hardcode:
+- Super Admin list
+- Admin list
+
+Default:
+Viewer
+
+Log detected role.
+
+Do not enforce yet.
+Pure detection.
+```
+
+---
+
+# PROMPT 15 — Role Enforcement
+
+```text
+Integrate role enforcement.
+
+If Viewer:
+- MemberChart shows only their row
+- No sheet editing allowed
+
+If Admin:
+- View all
+- No edits
+
+If Super Admin:
+- Full control
+
+Protect sheets accordingly.
+
+Integrate into buildMemberChart() and UI loading.
+```
+
+---
+
+# PROMPT 16 — Insert Logo
+
+```text
+Enhance buildMemberChart():
+
+- Insert logo image at top
+- Maintain layout integrity
+
+Keep configurable:
+LOGO_URL constant
+
+Ensure:
+- No shifting of headers
+- Chart still formatted
+```
+
+---
+
+# PROMPT 17 — PDF Export
+
+```text
+Implement PdfService.generateMemberChartPDF().
+
+Requirements:
+- Export MemberChart sheet
+- Landscape
+- Fit to width
+- Proper margins
+- Return blob
+
+Wire menu item:
+Generate PDF
+
+Ensure:
+- Uses current filtered view
+- No unused code
+- Fully integrated
+```
+
+---
+
+# PROMPT 18 — Final Wiring & Cleanup
+
+```text
+Final integration pass.
+
+1. Remove dead code.
+2. Ensure:
+   - No stub functions remain
+   - No unused test helpers (comment out tests, keep optional)
+3. Verify:
+   - Member add triggers recalculation
+   - Event add triggers recalculation
+   - Role filtering works
+   - PDF works
+4. Add top-level function:
+   validateSystemHealth()
+
+Return final production-ready Apps Script code.
+```
+
+---
+
+# END OF PROMPT SEQUENCE
+
+This sequence ensures:
+
+- No complexity jumps
+- Every step integrated
+- Pure functions tested before sheet writes
+- No orphaned code
+- Final system fully wired
